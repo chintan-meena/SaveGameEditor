@@ -27,6 +27,12 @@ You need Windows with PowerShell 5.1, which comes with Windows 10 and 11. There'
 | **Unlocked** (not played) | Keeps the record the game wrote and adds one 3-star result for the challenge's default character, taken from a real 100% save. |
 | **Locked** (grey) | Experimental. Adds a record built the same way, and you're asked to confirm first. |
 
+### WayneTech upgrade points
+
+The **WayneTech points** box shows your unspent upgrade points for the selected save. Change the number and click **Set points**. Like every other change, your saves are backed up first.
+
+In the save, the points are a `u32` at `0x4C` bytes after the text `- Total` (part of the combat score help text). Two values in the same block are always the same, `16` at `+0x08` and `31` at `+0x44`, so the tool checks those before writing. Older saves without that text show "not found".
+
 ### Backups
 
 All backups go in `Documents\ArkhamKnight_SaveBackup`.

@@ -334,6 +334,16 @@ function Get-UpdatedSave([byte[]]$b, [int[]]$ids) {
     return , $out
 }
 
+# WayneTech upgrade points: u32 at 0x4C past the "- Total" text of the combat score help;
+# found by spending points (70 -> 67 -> 68). Same block always has 16 at +0x08 and 31 at +0x44.
+function Find-PointsOffset([byte[]]$b) {
+    $s = [Text.Encoding]::ASCII.GetString($b, 0, [Math]::Min($b.Length, 0x40000))
+    $t = $s.IndexOf("- Total`0")
+    if ($t -lt 0) { return -1 }
+    if ([BitConverter]::ToInt32($b, $t + 0x08) -ne 16 -or [BitConverter]::ToInt32($b, $t + 0x44) -ne 31) { return -1 }
+    return $t + 0x4C
+}
+
 function Find-Saves {
     $steam = $null
     try { $steam = (Get-ItemProperty 'HKCU:\Software\Valve\Steam' -Name SteamPath).SteamPath -replace '/', '\' } catch {}
@@ -385,6 +395,8 @@ if ($SelfTest) {
         $new = Get-UpdatedSave $b $all
         $after = Read-Records $new
         $bad = @($all | Where-Object { $k = $_; (Get-RecordState ($after.Records | Where-Object { $_.Id -eq $k } | Select-Object -First 1)).Stars -ne 3 })
+        $po = Find-PointsOffset $b
+        if ($po -ge 0) { "  WayneTech points: $([BitConverter]::ToInt32($b, $po)) (at 0x$('{0:X}' -f $po))" } else { "  WayneTech points: not found" }
         '{0}: records={1} at 0x{2:X}, played={3}, unlocked={4}, locked={5}; dry-run on all -> {6}' -f $s.Label, $info.Records.Count, $info.CountOffset,
             @($states.Values | Where-Object { $_ -eq 'Played' }).Count, @($states.Values | Where-Object { $_ -eq 'Unlocked' }).Count, @($states.Values | Where-Object { $_ -eq 'Locked' }).Count,
             $(if ($bad.Count -eq 0 -and $new.Length -eq $b.Length) { "OK ($($after.Records.Count) records)" } else { "FAILED ($($bad -join ','))" })
@@ -406,14 +418,22 @@ $form.StartPosition = 'CenterScreen'
 $form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 
 $top = New-Object System.Windows.Forms.Panel
-$top.Dock = 'Top'; $top.Height = 40
+$top.Dock = 'Top'; $top.Height = 76
 $lbl = New-Object System.Windows.Forms.Label
 $lbl.Text = 'Save:'; $lbl.AutoSize = $true; $lbl.Location = New-Object System.Drawing.Point(10, 12)
 $combo = New-Object System.Windows.Forms.ComboBox
 $combo.DropDownStyle = 'DropDownList'; $combo.Location = New-Object System.Drawing.Point(50, 8); $combo.Width = 640
 $btnReload = New-Object System.Windows.Forms.Button
 $btnReload.Text = 'Reload'; $btnReload.Location = New-Object System.Drawing.Point(700, 7); $btnReload.Width = 120
-$top.Controls.AddRange(@($lbl, $combo, $btnReload))
+$lblPts = New-Object System.Windows.Forms.Label
+$lblPts.Text = 'WayneTech points:'; $lblPts.AutoSize = $true; $lblPts.Location = New-Object System.Drawing.Point(10, 46)
+$numPts = New-Object System.Windows.Forms.NumericUpDown
+$numPts.Location = New-Object System.Drawing.Point(125, 43); $numPts.Width = 80; $numPts.Minimum = 0; $numPts.Maximum = 999
+$btnPts = New-Object System.Windows.Forms.Button
+$btnPts.Text = 'Set points'; $btnPts.Location = New-Object System.Drawing.Point(212, 42); $btnPts.Width = 100
+$lblPtsNote = New-Object System.Windows.Forms.Label
+$lblPtsNote.AutoSize = $true; $lblPtsNote.Location = New-Object System.Drawing.Point(320, 46); $lblPtsNote.ForeColor = [System.Drawing.Color]::DimGray
+$top.Controls.AddRange(@($lbl, $combo, $btnReload, $lblPts, $numPts, $btnPts, $lblPtsNote))
 
 $grid = New-Object System.Windows.Forms.DataGridView
 $grid.Dock = 'Fill'
@@ -457,7 +477,18 @@ function Load-Grid {
     $grid.Rows.Clear()
     if ($combo.SelectedIndex -lt 0) { return }
     $file = $script:saves[$combo.SelectedIndex].File
-    try { $info = Read-Records ([IO.File]::ReadAllBytes($file)) }
+    $bytes = [IO.File]::ReadAllBytes($file)
+    $po = Find-PointsOffset $bytes
+    if ($po -ge 0) {
+        $numPts.Value = [Math]::Max(0, [Math]::Min(999, [BitConverter]::ToInt32($bytes, $po)))
+        $numPts.Enabled = $true; $btnPts.Enabled = $true
+        $lblPtsNote.Text = 'Unspent points shown on the upgrade screen.'
+    }
+    else {
+        $numPts.Value = 0; $numPts.Enabled = $false; $btnPts.Enabled = $false
+        $lblPtsNote.Text = 'Points not found in this save (older save format).'
+    }
+    try { $info = Read-Records $bytes }
     catch { $status.Text = "Could not read this save: $($_.Exception.Message)"; return }
     $total = 0
     foreach ($c in $ChallengeList) {
@@ -491,6 +522,23 @@ $btnTickUnlocked.Add_Click({
     foreach ($r in $grid.Rows) { $r.Cells[0].Value = ($r.Tag -ne 'Locked' -and $r.Cells[4].Value -ne ($star * 3)) }
 })
 $btnOpen.Add_Click({ New-Item -ItemType Directory -Force $BackupRoot | Out-Null; Start-Process explorer.exe $BackupRoot })
+$btnPts.Add_Click({
+    if (Test-GameRunning) { [void][System.Windows.Forms.MessageBox]::Show('Arkham Knight is running. Close it first.', 'Game running', 'OK', 'Warning'); return }
+    if ($combo.SelectedIndex -lt 0) { return }
+    try {
+        $file = $script:saves[$combo.SelectedIndex].File
+        $b = [IO.File]::ReadAllBytes($file)
+        $po = Find-PointsOffset $b
+        if ($po -lt 0) { throw 'WayneTech points not found in this save.' }
+        $old = [BitConverter]::ToInt32($b, $po)
+        $bk = Backup-SaveFolder (Split-Path $file) ''
+        [BitConverter]::GetBytes([int]$numPts.Value).CopyTo($b, $po)
+        [IO.File]::WriteAllBytes($file, $b)
+        Load-Grid
+        $status.Text = "WayneTech points: $old -> $($numPts.Value). Backup: $bk`nIf Steam shows a Cloud conflict when you start the game, choose the LOCAL files."
+    }
+    catch { [void][System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Error', 'OK', 'Error') }
+})
 $btnBackup.Add_Click({
     if ($combo.SelectedIndex -lt 0) { return }
     $bk = Backup-SaveFolder (Split-Path $script:saves[$combo.SelectedIndex].File) '_manual'
