@@ -24,14 +24,21 @@ You need Windows with PowerShell 5.1, which comes with Windows 10 and 11. There'
 | Challenge status | What happens |
 |---|---|
 | **Played** | Your own results are kept. Each character's entry is set to 3 stars, and the best score or time is raised to the 3-star goal if it's below it. |
-| **Unlocked** (not played) | Gets a 3-star record copied from a real 100% save. |
-| **Locked** (grey) | Gets the same copied record, and you're asked to confirm first. |
+| **Unlocked** (not played) | Keeps the record the game wrote and adds one 3-star result for the challenge's default character, taken from a real 100% save. |
+| **Locked** (grey) | Experimental. Adds a record built the same way, and you're asked to confirm first. |
 
-- Before every change, all your saves are backed up to `Documents\ArkhamKnight_SaveBackup\<date_time>`.
-- **Restore a backup...** puts any of those backups back.
-- Steam achievements are **not** unlocked, and leaderboards keep your real scores.
+### Backups
 
-> **Tip:** try a few challenges first, start the game, and then do the rest. If the game won't load a save, use **Restore a backup...**.
+All backups go in `Documents\ArkhamKnight_SaveBackup`.
+
+- **Original:** the first time the tool runs, it copies your untouched saves to a folder ending in `_ORIGINAL_<steam id>`. It never overwrites this copy.
+- **Before every change:** all your save slots are copied to a folder named by date and time.
+- **Back up now:** makes an extra copy whenever you like.
+- **Restore a backup...:** pick any backup folder to put it back. Your current saves are backed up first.
+
+Steam achievements are **not** unlocked, and leaderboards keep your real scores.
+
+> **Tip:** do a few challenges first, start the game, and only then do the rest. If the game won't load the save, close it and use **Restore a backup...**.
 
 ### How it works
 
@@ -50,11 +57,11 @@ u32 count, then per record:
     u32 packed               stars << 29 | value   (times: value = 0x20000000 - ms)
     u32 best                 points, or centiseconds for timed challenges
     u32 0, u32 0
-    u8  stars, u8[3]
+    u8  stars, u8 ?, u8 character/vehicle (0 = default), u8 rivals
   u8[7] + u32 tail           last character/vehicle used, or a stamp
 ```
 
-The tail is specific to each challenge and character, so building records by hand for challenges you haven't played can crash the game on load. That's why unlocked and locked challenges get records the game itself wrote, taken from a complete save.
+Each entry belongs to one character or Batmobile. A save loaded with entries for characters or vehicles it hasn't unlocked crashed the game, so the tool only ever adds an entry for the challenge's default character.
 
 Check the save parsing without changing anything:
 

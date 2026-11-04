@@ -12,12 +12,16 @@ Save layout (found by diffing saves, 2026-11-04):
     then u8[7] + u32 tail (last character/vehicle used, or a stamp)
   Scores are points; times are centiseconds. No checksum.
 
+Entry byte +22 is the character/vehicle used (0 = the challenge's default, 0B-0E/32-34
+characters, 64-69 Batmobiles); +23 is rivals earned.
+
 How challenges are handled:
   Played   - your own entries are kept, stars set to 3 and best raised to the 3-star goal
-  Unlocked - replaced with the record from a real 100% save (Nexus "Darny's 240 Save")
-  Locked   - that same reference record is added
-Hand-built records for locked challenges crashed the game once; the reference records
-are written by the game itself, but test a few before doing them all.
+  Unlocked - your own record plus ONE default-character entry from a real 100% save
+             (Nexus "Darny's 240 Save")
+  Locked   - experimental: reference flags/tail plus that one default-character entry
+Copying whole reference records (entries for all 8 characters / 6 Batmobiles) crashed
+the game on a save that hadn't unlocked them, so only the default entry is used.
 
 Run:  "Arkham Knight Stars.cmd"   (or: powershell -STA -File ArkhamKnightStars.ps1 [-SelfTest])
 #>
@@ -264,6 +268,16 @@ function Set-EntryThreeStars([byte[]]$rec, [int]$e, $c) {
     $rec[$o + 20] = 3
 }
 
+# The reference entry for the challenge's default character/vehicle (byte +22 == 0)
+function Get-DefaultEntry([byte[]]$ref) {
+    $idx = 0
+    for ($e = 0; $e -lt $ref[7]; $e++) { if ($ref[8 + 24 * $e + 22] -eq 0) { $idx = $e; break } }
+    $entry = New-Object byte[] 24
+    [Array]::Copy($ref, 8 + 24 * $idx, $entry, 0, 24)
+    $entry[22] = 0
+    return , $entry
+}
+
 function Get-UpdatedSave([byte[]]$b, [int[]]$ids) {
     $info = Read-Records $b
     $recs = $info.Records
@@ -275,10 +289,24 @@ function Get-UpdatedSave([byte[]]$b, [int[]]$ids) {
             for ($e = 0; $e -lt $ex.Bytes[7]; $e++) { Set-EntryThreeStars $ex.Bytes $e $c }
         }
         elseif ($ex) {
-            $ex.Bytes = [byte[]]$Reference[$id].Clone()
+            # Unlocked: keep the id/flags/tail the game wrote, add one default-character entry
+            $s = $ex.Bytes
+            $rec = New-Object byte[] 43
+            [Array]::Copy($s, 0, $rec, 0, 7)
+            $rec[7] = 1
+            (Get-DefaultEntry $Reference[$id]).CopyTo($rec, 8)
+            [Array]::Copy($s, 8, $rec, 32, 11)
+            $ex.Bytes = $rec
         }
         else {
-            $recs.Add([pscustomobject]@{ Id = $id; Bytes = [byte[]]$Reference[$id].Clone() })
+            # Locked (experimental): reference id/flags/tail with one default-character entry
+            $ref = $Reference[$id]
+            $rec = New-Object byte[] 43
+            [Array]::Copy($ref, 0, $rec, 0, 7)
+            $rec[7] = 1
+            (Get-DefaultEntry $ref).CopyTo($rec, 8)
+            [Array]::Copy($ref, $ref.Length - 11, $rec, 32, 11)
+            $recs.Add([pscustomobject]@{ Id = $id; Bytes = $rec })
         }
     }
     $ms = New-Object IO.MemoryStream
@@ -323,6 +351,13 @@ function Backup-SaveFolder([string]$folder, [string]$suffix) {
     New-Item -ItemType Directory -Force $dst | Out-Null
     Copy-Item (Join-Path $folder '*') $dst -Force
     return $dst
+}
+
+# One untouched copy per Steam account, made the first time the tool sees it
+function Save-OriginalBackup([string]$folder) {
+    $sid = Split-Path (Split-Path (Split-Path $folder -Parent) -Parent) -Leaf
+    if (Get-ChildItem $BackupRoot -Directory -Filter "*_ORIGINAL_$sid" -ErrorAction SilentlyContinue) { return $null }
+    return Backup-SaveFolder $folder "_ORIGINAL_$sid"
 }
 
 function Test-GameRunning { [bool](Get-Process BatmanAK -ErrorAction SilentlyContinue) }
@@ -397,11 +432,12 @@ function New-Btn($text, $x, $w) {
     $b.Text = $text; $b.Location = New-Object System.Drawing.Point($x, 8); $b.Size = New-Object System.Drawing.Size($w, 30)
     $bottom.Controls.Add($b); return $b
 }
-$btnTickUnlocked = New-Btn 'Tick unlocked (not 3-star)' 10 180
-$btnClear = New-Btn 'Clear ticks' 196 90
-$btnApply = New-Btn 'Give 3 stars to ticked' 292 170
-$btnRestore = New-Btn 'Restore a backup...' 468 140
-$btnOpen = New-Btn 'Open backups folder' 614 140
+$btnTickUnlocked = New-Btn 'Tick unlocked (not 3-star)' 10 170
+$btnClear = New-Btn 'Clear ticks' 184 80
+$btnApply = New-Btn 'Give 3 stars to ticked' 268 160
+$btnBackup = New-Btn 'Back up now' 432 100
+$btnRestore = New-Btn 'Restore a backup...' 536 130
+$btnOpen = New-Btn 'Open backups' 670 150
 $btnApply.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
 $status = New-Object System.Windows.Forms.Label
 $status.Location = New-Object System.Drawing.Point(10, 46); $status.Size = New-Object System.Drawing.Size(820, 40)
@@ -428,11 +464,16 @@ function Load-Grid {
         if ($st.Status -eq 'Locked') { $grid.Rows[$i].DefaultCellStyle.ForeColor = [System.Drawing.Color]::Gray }
         $grid.Rows[$i].Tag = $st.Status
     }
-    $status.Text = "Stars in this save: $total.  Locked challenges (grey) get a record copied from a 100% save - try a few first."
+    $status.Text = "Stars in this save: $total.  Try a few challenges first, then load the game. Locked (grey) ones are experimental.`n$script:backupNote"
 }
 
 function Refresh-Saves {
     $script:saves = @(Find-Saves)
+    $script:backupNote = "Backups: $BackupRoot"
+    foreach ($folder in ($script:saves | ForEach-Object { Split-Path $_.File } | Sort-Object -Unique)) {
+        try { $made = Save-OriginalBackup $folder; if ($made) { $script:backupNote = "Original saves backed up to $made" } }
+        catch { $script:backupNote = "Could not make the original backup: $($_.Exception.Message)" }
+    }
     $combo.Items.Clear()
     foreach ($s in $script:saves) { [void]$combo.Items.Add($s.Label) }
     if ($combo.Items.Count -gt 0) { $combo.SelectedIndex = 0 } else { $status.Text = 'No Arkham Knight saves found in Steam userdata.' }
@@ -445,6 +486,11 @@ $btnTickUnlocked.Add_Click({
     foreach ($r in $grid.Rows) { $r.Cells[0].Value = ($r.Tag -ne 'Locked' -and $r.Cells[4].Value -ne ($star * 3)) }
 })
 $btnOpen.Add_Click({ New-Item -ItemType Directory -Force $BackupRoot | Out-Null; Start-Process explorer.exe $BackupRoot })
+$btnBackup.Add_Click({
+    if ($combo.SelectedIndex -lt 0) { return }
+    $bk = Backup-SaveFolder (Split-Path $script:saves[$combo.SelectedIndex].File) '_manual'
+    $status.Text = "Backed up all save slots to $bk"
+})
 
 $btnApply.Add_Click({
     $grid.EndEdit()
