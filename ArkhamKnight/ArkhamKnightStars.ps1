@@ -10,7 +10,8 @@ Save layout (found by diffing saves, 2026-11-04):
     +8   N x 24 bytes: u32 0, u32 packed, u32 best, u32 0, u32 0, u8 stars + u8[3]
            packed = stars << 29 | value  (times: value = 0x20000000 - ms)
     then u8[7] + u32 tail (last character/vehicle used, or a stamp)
-  Scores are points; times are centiseconds. No checksum.
+  Scores are points; times are centiseconds. No checksum, but the header u32 at 0x0C is
+  the size of the section holding this list and must grow/shrink with it.
 
 Entry byte +22 is the character/vehicle used (0 = the challenge's default, 0B-0E/32-34
 characters, 64-69 Batmobiles); +23 is rivals earned.
@@ -315,6 +316,10 @@ function Get-UpdatedSave([byte[]]$b, [int[]]$ids) {
     foreach ($r in $recs) { $ms.Write($r.Bytes, 0, $r.Bytes.Length) }
     $ms.Write($b, $info.End, $b.Length - $info.End)
     $out = $ms.ToArray()
+    # Header u32 at 0x0C is the byte size of the section holding the challenge list;
+    # the game crashes on load if it doesn't match after records grow or shrink
+    $delta = $out.Length - $b.Length
+    [BitConverter]::GetBytes([int]([BitConverter]::ToInt32($b, 0x0C) + $delta)).CopyTo($out, 0x0C)
     if ($out.Length -gt $b.Length) {
         for ($i = $b.Length; $i -lt $out.Length; $i++) { if ($out[$i] -ne 0) { throw "Not enough free space at the end of the save." } }
         $trim = New-Object byte[] $b.Length

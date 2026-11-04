@@ -42,7 +42,7 @@ Steam achievements are **not** unlocked, and leaderboards keep your real scores.
 
 ### How it works
 
-Saves are in `Steam\userdata\<id>\208650\remote\BAK1Save<slot>x<n>.sgd`. The game rotates 3 files per slot, and the newest one is the live save. There's no checksum.
+Saves are in `Steam\userdata\<id>\208650\remote\BAK1Save<slot>x<n>.sgd`. The game rotates 3 files per slot, and the newest one is the live save. There's no checksum. However, the header `u32` at offset `0x0C` is the size of the section that holds the challenge list. When records are added or grow, it has to change by the same number of bytes, or the game crashes with a "Fatal error" on load.
 
 The AR challenge results are stored as a list of records:
 
