@@ -31,7 +31,16 @@ You need Windows with PowerShell 5.1, which comes with Windows 10 and 11. There'
 
 The **WayneTech points** box shows your unspent upgrade points for the selected save. Change the number and click **Set points**. Like every other change, your saves are backed up first.
 
-In the save, the points are a `u32` at `0x4C` bytes after the text `- Total` (part of the combat score help text). Two values in the same block are always the same, `16` at `+0x08` and `31` at `+0x44`, so the tool checks those before writing. Older saves without that text show "not found".
+In the save, the points come after the text `- Total` (part of the combat score help text):
+
+```
+"- Total\0"  u32 N, N x u32       N is usually 16, but 14 early in a new game
+             u32 points           <- WayneTech points
+             u32, u32
+             u32 K, K x u32       completed training challenge ids (503, 201, ...)
+```
+
+Because `N` varies, the position of the points varies too. The tool only writes when the `K` values after the points are real challenge IDs. Older saves without this block show "not found".
 
 ### Backups
 

@@ -334,14 +334,20 @@ function Get-UpdatedSave([byte[]]$b, [int[]]$ids) {
     return , $out
 }
 
-# WayneTech upgrade points: u32 at 0x4C past the "- Total" text of the combat score help;
-# found by spending points (70 -> 67 -> 68). Same block always has 16 at +0x08 and 31 at +0x44.
+# WayneTech upgrade points, found by spending points (70 -> 67 -> 68). After the "- Total" text of
+# the combat score help: u32 N, N x u32, then u32 points, u32, u32, u32 K, K x u32 training ids.
+# N is 16 in most saves but 14 early in a new game, so the offset moves; the training ids validate it.
 function Find-PointsOffset([byte[]]$b) {
     $s = [Text.Encoding]::ASCII.GetString($b, 0, [Math]::Min($b.Length, 0x40000))
     $t = $s.IndexOf("- Total`0")
     if ($t -lt 0) { return -1 }
-    if ([BitConverter]::ToInt32($b, $t + 0x08) -ne 16 -or [BitConverter]::ToInt32($b, $t + 0x44) -ne 31) { return -1 }
-    return $t + 0x4C
+    $n = [BitConverter]::ToInt32($b, $t + 8)
+    if ($n -lt 1 -or $n -gt 64) { return -1 }
+    $po = $t + 12 + 4 * $n
+    $k = [BitConverter]::ToInt32($b, $po + 12)
+    if ($k -lt 1 -or $k -gt 32) { return -1 }
+    for ($i = 0; $i -lt $k; $i++) { if (-not (Test-KnownId ([BitConverter]::ToInt32($b, $po + 16 + 4 * $i)))) { return -1 } }
+    return $po
 }
 
 function Find-Saves {
