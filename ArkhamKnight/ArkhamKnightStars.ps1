@@ -256,7 +256,7 @@ function Get-RecordState($rec) {
         $s = $rec.Bytes[28 + 24 * $e]
         if ($s -gt $stars) { $stars = $s; $best = [BitConverter]::ToInt32($rec.Bytes, 16 + 24 * $e) }
     }
-    return [pscustomobject]@{ Status = 'Played'; Stars = $stars; Best = $best }
+    return [pscustomobject]@{ Status = 'Played'; Stars = $stars; Best = $best; Paid = (($rec.Bytes[5] -band 0x40) -ne 0) }
 }
 
 # Existing entry (mutated in place): raise best to the 3-star goal and set stars; packed field is left as the game wrote it
@@ -279,15 +279,23 @@ function Get-DefaultEntry([byte[]]$ref) {
     return , $entry
 }
 
+# First 3 stars on a challenge pays +1 WayneTech point once; flags byte +5 bit 0x40 records that it was paid
+# (set on every game-written 3-star record and completed training, never on 1-2 star ones).
+$RewardBit = 0x40
+
+# Sets $script:Awarded to the number of WayneTech points paid out (0 if the save has no points field)
 function Get-UpdatedSave([byte[]]$b, [int[]]$ids) {
     $info = Read-Records $b
     $recs = $info.Records
+    $canPay = (Find-PointsOffset $b) -ge 0
+    $script:Awarded = 0
     foreach ($id in $ids) {
         $c = $Challenges[$id]
         $ex = $null
         foreach ($r in $recs) { if ($r.Id -eq $id) { $ex = $r; break } }
         if ($ex -and $ex.Bytes[7] -gt 0) {
             for ($e = 0; $e -lt $ex.Bytes[7]; $e++) { Set-EntryThreeStars $ex.Bytes $e $c }
+            $rb = $ex.Bytes
         }
         elseif ($ex) {
             # Unlocked: keep the id/flags/tail the game wrote, add one default-character entry
@@ -298,6 +306,7 @@ function Get-UpdatedSave([byte[]]$b, [int[]]$ids) {
             (Get-DefaultEntry $Reference[$id]).CopyTo($rec, 8)
             [Array]::Copy($s, 8, $rec, 32, 11)
             $ex.Bytes = $rec
+            $rb = $rec
         }
         else {
             # Locked (experimental): reference id/flags/tail with one default-character entry
@@ -307,7 +316,13 @@ function Get-UpdatedSave([byte[]]$b, [int[]]$ids) {
             $rec[7] = 1
             (Get-DefaultEntry $ref).CopyTo($rec, 8)
             [Array]::Copy($ref, $ref.Length - 11, $rec, 32, 11)
+            $rec[5] = $rec[5] -band (0xFF -bxor $RewardBit)   # reference was paid; this save hasn't been
             $recs.Add([pscustomobject]@{ Id = $id; Bytes = $rec })
+            $rb = $rec
+        }
+        if ($canPay -and ($rb[5] -band $RewardBit) -eq 0) {
+            $rb[5] = $rb[5] -bor $RewardBit
+            $script:Awarded++
         }
     }
     $ms = New-Object IO.MemoryStream
@@ -330,6 +345,12 @@ function Get-UpdatedSave([byte[]]$b, [int[]]$ids) {
         $pad = New-Object byte[] $b.Length
         [Array]::Copy($out, $pad, $out.Length)
         $out = $pad
+    }
+    if ($script:Awarded -gt 0) {
+        # The points block sits after the challenge list, so find it again in the rebuilt save
+        $po = Find-PointsOffset $out
+        if ($po -lt 0) { throw "WayneTech points moved unexpectedly; nothing written." }
+        [BitConverter]::GetBytes([int]([BitConverter]::ToInt32($out, $po) + $script:Awarded)).CopyTo($out, $po)
     }
     return , $out
 }
@@ -400,7 +421,13 @@ if ($SelfTest) {
         $all = @($ChallengeList | ForEach-Object { $_.Id })
         $new = Get-UpdatedSave $b $all
         $after = Read-Records $new
-        $bad = @($all | Where-Object { $k = $_; (Get-RecordState ($after.Records | Where-Object { $_.Id -eq $k } | Select-Object -First 1)).Stars -ne 3 })
+        $po = Find-PointsOffset $b
+        $bad = @($all | Where-Object { $k = $_; $st = Get-RecordState ($after.Records | Where-Object { $_.Id -eq $k } | Select-Object -First 1); $st.Stars -ne 3 -or ($po -ge 0 -and -not $st.Paid) })
+        if ($po -ge 0) {
+            $pAfter = [BitConverter]::ToInt32($new, (Find-PointsOffset $new))
+            "  dry-run points: $([BitConverter]::ToInt32($b, $po)) + $script:Awarded = $pAfter"
+            if ($pAfter -ne [BitConverter]::ToInt32($b, $po) + $script:Awarded) { $bad += 'points' }
+        }
         $po = Find-PointsOffset $b
         if ($po -ge 0) { "  WayneTech points: $([BitConverter]::ToInt32($b, $po)) (at 0x$('{0:X}' -f $po))" } else { "  WayneTech points: not found" }
         '{0}: records={1} at 0x{2:X}, played={3}, unlocked={4}, locked={5}; dry-run on all -> {6}' -f $s.Label, $info.Records.Count, $info.CountOffset,
@@ -448,7 +475,7 @@ $grid.SelectionMode = 'FullRowSelect'; $grid.AutoSizeColumnsMode = 'Fill'
 $colPick = New-Object System.Windows.Forms.DataGridViewCheckBoxColumn
 $colPick.HeaderText = 'Pick'; $colPick.FillWeight = 8
 [void]$grid.Columns.Add($colPick)
-foreach ($h in @(@('ID', 8), @('Challenge', 42), @('Status', 16), @('Stars', 12), @('Best', 14))) {
+foreach ($h in @(@('ID', 8), @('Challenge', 38), @('Status', 14), @('Stars', 12), @('Best', 13), @('WayneTech', 12))) {
     $col = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
     $col.HeaderText = $h[0]; $col.FillWeight = $h[1]; $col.ReadOnly = $true
     [void]$grid.Columns.Add($col)
@@ -463,7 +490,7 @@ function New-Btn($text, $x, $w) {
     $b.Text = $text; $b.Location = New-Object System.Drawing.Point($x, 8); $b.Size = New-Object System.Drawing.Size($w, 30)
     $bottom.Controls.Add($b); return $b
 }
-$btnTickUnlocked = New-Btn 'Tick unlocked (not 3-star)' 10 170
+$btnTickUnlocked = New-Btn 'Tick unlocked to finish' 10 170
 $btnClear = New-Btn 'Clear ticks' 184 80
 $btnApply = New-Btn 'Give 3 stars to ticked' 268 160
 $btnBackup = New-Btn 'Back up now' 432 100
@@ -497,16 +524,22 @@ function Load-Grid {
     try { $info = Read-Records $bytes }
     catch { $status.Text = "Could not read this save: $($_.Exception.Message)"; return }
     $total = 0
+    $unpaid = 0
     foreach ($c in $ChallengeList) {
         $rec = $null
         foreach ($r in $info.Records) { if ($r.Id -eq $c.Id) { $rec = $r; break } }
         $st = Get-RecordState $rec
         $n = [Math]::Max(0, [Math]::Min(3, $st.Stars)); $total += $n
-        $i = $grid.Rows.Add($false, $c.Id, $c.Name, $st.Status, ($star * $n + $hollow * (3 - $n)), (Format-Best $c $st.Best))
+        $pay = ''
+        if ($n -ge 3) { if ($st.Paid) { $pay = '+1 paid' } else { $pay = 'not paid'; $unpaid++ } }
+        $i = $grid.Rows.Add($false, $c.Id, $c.Name, $st.Status, ($star * $n + $hollow * (3 - $n)), (Format-Best $c $st.Best), $pay)
         if ($st.Status -eq 'Locked') { $grid.Rows[$i].DefaultCellStyle.ForeColor = [System.Drawing.Color]::Gray }
+        if ($pay -eq 'not paid') { $grid.Rows[$i].Cells[6].Style.ForeColor = [System.Drawing.Color]::Firebrick }
         $grid.Rows[$i].Tag = $st.Status
     }
-    $status.Text = "Stars in this save: $total.  Try a few challenges first, then load the game. Locked (grey) ones are experimental.`n$script:backupNote"
+    $owed = ''
+    if ($unpaid -gt 0) { $owed = "  $unpaid challenge(s) have 3 stars but never paid their WayneTech point - tick them to collect." }
+    $status.Text = "Stars in this save: $total.$owed  Locked (grey) ones are experimental.`n$script:backupNote"
 }
 
 function Refresh-Saves {
@@ -525,7 +558,7 @@ $combo.Add_SelectedIndexChanged({ Load-Grid })
 $btnReload.Add_Click({ Refresh-Saves })
 $btnClear.Add_Click({ foreach ($r in $grid.Rows) { $r.Cells[0].Value = $false } })
 $btnTickUnlocked.Add_Click({
-    foreach ($r in $grid.Rows) { $r.Cells[0].Value = ($r.Tag -ne 'Locked' -and $r.Cells[4].Value -ne ($star * 3)) }
+    foreach ($r in $grid.Rows) { $r.Cells[0].Value = ($r.Tag -ne 'Locked' -and ($r.Cells[4].Value -ne ($star * 3) -or $r.Cells[6].Value -eq 'not paid')) }
 })
 $btnOpen.Add_Click({ New-Item -ItemType Directory -Force $BackupRoot | Out-Null; Start-Process explorer.exe $BackupRoot })
 $btnPts.Add_Click({
@@ -568,7 +601,7 @@ $btnApply.Add_Click({
         $bk = Backup-SaveFolder (Split-Path $file) ''
         [IO.File]::WriteAllBytes($file, $out)
         Load-Grid
-        $status.Text = "Done: $($ids.Count) challenge(s) set to 3 stars. Backup: $bk`nIf Steam shows a Cloud conflict when you start the game, choose the LOCAL files."
+        $status.Text = "Done: $($ids.Count) challenge(s) set to 3 stars, +$script:Awarded WayneTech point(s) (now $($numPts.Value)). Backup: $bk`nIf Steam shows a Cloud conflict when you start the game, choose the LOCAL files."
     }
     catch { [void][System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Error', 'OK', 'Error') }
 })

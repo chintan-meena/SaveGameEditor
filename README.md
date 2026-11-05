@@ -27,6 +27,16 @@ You need Windows with PowerShell 5.1, which comes with Windows 10 and 11. There'
 | **Unlocked** (not played) | Keeps the record the game wrote and adds one 3-star result for the challenge's default character, taken from a real 100% save. |
 | **Locked** (grey) | Experimental. Adds a record built the same way, and you're asked to confirm first. |
 
+### WayneTech point for 3 stars
+
+In the game, the first time a challenge reaches 3 stars you get **+1 WayneTech Upgrade Point**. The challenge screen shows this as "+1 Ⓦ" next to the 3-star goal. The tool pays out this point too:
+
+- Each record has a flag bit (`0x40` in flag byte `+5`) that marks the point as paid. The game sets it on every 3-star challenge and every completed training, and never on 1- or 2-star ones. This held for all 604 game-written records in 29 saves.
+- When the tool gives a challenge 3 stars and that bit isn't set, it sets the bit and adds 1 to your WayneTech points. Each challenge pays out only once.
+- The **WayneTech** column shows `+1 paid` or `not paid` for every 3-star challenge. Challenges given 3 stars by an older version of this tool show `not paid`, and **Tick unlocked to finish** includes them so you can collect.
+
+The game doesn't pay out missed points on load, so collecting them this way is the only route.
+
 ### WayneTech upgrade points
 
 The **WayneTech points** box shows your unspent upgrade points for the selected save. Change the number and click **Set points**. Like every other change, your saves are backed up first.
