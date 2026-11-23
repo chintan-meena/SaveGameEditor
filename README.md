@@ -4,7 +4,7 @@ Small save-game editors for single-player PC games.
 
 ## Batman: Arkham Knight – AR Challenge Stars
 
-Pick AR challenges from a list and give them 3 stars, instead of replaying them over and over.
+Pick AR challenges from a list and give them 3 stars, instead of replaying them over and over. It can also add a Numpad / key that makes Riddler informants easy to find.
 
 ![Steam](https://img.shields.io/badge/platform-Steam%20(PC)-blue)
 
@@ -51,6 +51,31 @@ In the save, the points come after the text `- Total` (part of the combat score 
 ```
 
 Because `N` varies, the position of the points varies too. The tool only writes when the `K` values after the points are real challenge IDs. Older saves without this block show "not found".
+
+### Riddler informant key (Numpad /)
+
+To find the Riddler trophies you're missing, click **Add Riddler key (Num /)** at the top right. This doesn't change your save. It adds a key to the game's own keybind file:
+
+1. Restart the game, load your save and press **Numpad /** once you're playing. Press it again after every launch, because the setting resets when you quit.
+2. **Most cars now carry a Riddler informant.** Stop or wreck an enemy car and interrogate the driver highlighted green in Detective Mode. This affects only cars that appear after you press the key.
+3. **Informants stay conscious after an interrogation,** so you can question the same one again and again. Each interrogation marks more uncollected trophies and riddles on your normal map. Keep going until nothing new appears.
+
+The Riddler only reveals items on islands you've already unlocked in the story.
+
+What it installs:
+
+| File | Change |
+|---|---|
+| `Binaries\Win64\RiddlerInformants.txt` (and a copy in `Binaries\`) | `set BmGame.RVehicleNPC bContainsRiddlerInformant true` and `set BmGame.RSpecialMoveInstance_Interrogation bDontKOVictim true` |
+| `DLC\356474\Content\BmGame\Config\BmInput.ini` | Adds `.Bindings=(Name="Divide",Command="exec RiddlerInformants.txt")` under `[Engine.PlayerInput]`. If the file already exists, it's copied to the backup folder first. Other bindings are kept. |
+
+The `DLC\356474` folder comes with the free "New 52" skins DLC. **Remove Riddler key** undoes both changes. Without the GUI:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ArkhamKnight\ArkhamKnightStars.ps1 -RiddlerKey install   # or remove / status
+```
+
+The two commands come from the **"Console Command Compendium"** mod on Nexus Mods (mod 2866).
 
 ### Backups
 

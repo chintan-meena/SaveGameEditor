@@ -24,9 +24,15 @@ How challenges are handled:
 Copying whole reference records (entries for all 8 characters / 6 Batmobiles) crashed
 the game on a save that hadn't unlocked them, so only the default entry is used.
 
+Riddler informant key (not a save edit): binds Numpad / in the game's keybind file
+DLC\356474\Content\BmGame\Config\BmInput.ini to "exec RiddlerInformants.txt" (in Binaries\Win64).
+That file turns on two console switches: most cars carry a Riddler informant, and
+interrogating doesn't knock the informant out, so one can be questioned again and again.
+
 Run:  "Arkham Knight Stars.cmd"   (or: powershell -STA -File ArkhamKnightStars.ps1 [-SelfTest])
+      -RiddlerKey install|remove|status   manages the Numpad / key without the GUI
 #>
-param([switch]$SelfTest)
+param([switch]$SelfTest, [ValidateSet('install', 'remove', 'status')][string]$RiddlerKey)
 $ErrorActionPreference = 'Stop'
 
 # id|name|3-star best|lower is better (times)
@@ -404,6 +410,90 @@ function Save-OriginalBackup([string]$folder) {
 
 function Test-GameRunning { [bool](Get-Process BatmanAK -ErrorAction SilentlyContinue) }
 
+# ---------------- Riddler informant key (Numpad /) ----------------
+$RiddlerFile = 'RiddlerInformants.txt'
+$RiddlerBinding = '.Bindings=(Name="Divide",Command="exec RiddlerInformants.txt")'
+$RiddlerCommands = @'
+// Riddler informant helpers, installed by SaveGameEditor. Press Numpad / in game after every launch.
+// Most vehicles carry a Riddler informant: stop or wreck a car, then interrogate the green-highlighted driver
+set BmGame.RVehicleNPC bContainsRiddlerInformant true
+// Interrogating doesn't knock the informant out, so the same one can be questioned again and again
+set BmGame.RSpecialMoveInstance_Interrogation bDontKOVictim true
+'@
+
+function Find-GameDir {
+    $steam = $null
+    try { $steam = (Get-ItemProperty 'HKCU:\Software\Valve\Steam' -Name SteamPath).SteamPath -replace '/', '\' } catch {}
+    if (-not $steam) { $steam = 'C:\Program Files (x86)\Steam' }
+    $libs = @($steam)
+    $vdf = Join-Path $steam 'steamapps\libraryfolders.vdf'
+    if (Test-Path $vdf) {
+        foreach ($m in [regex]::Matches([IO.File]::ReadAllText($vdf), '"path"\s+"([^"]+)"')) { $libs += $m.Groups[1].Value -replace '\\\\', '\' }
+    }
+    foreach ($l in $libs) {
+        $d = Join-Path $l 'steamapps\common\Batman Arkham Knight'
+        if (Test-Path (Join-Path $d 'Binaries\Win64\BatmanAK.exe')) { return $d }
+    }
+    return $null
+}
+
+function Get-InputIni([string]$game) { Join-Path $game 'DLC\356474\Content\BmGame\Config\BmInput.ini' }
+
+# State = Installed | Other (Numpad / bound to something else) | None; Command = what Numpad / runs now
+function Get-RiddlerKeyState([string]$game) {
+    $ini = Get-InputIni $game
+    $cmd = $null
+    if (Test-Path $ini) {
+        foreach ($line in [IO.File]::ReadAllLines($ini)) {
+            if ($line -match '^\s*\.Bindings=\(Name="Divide"\s*,\s*Command="([^"]*)"') { $cmd = $Matches[1] }
+        }
+    }
+    $state = 'None'
+    if ($cmd -match "^exec\s+$([regex]::Escape($RiddlerFile))$" -and (Test-Path (Join-Path $game "Binaries\Win64\$RiddlerFile"))) { $state = 'Installed' }
+    elseif ($cmd) { $state = 'Other' }
+    [pscustomobject]@{ State = $state; Command = $cmd; Ini = $ini }
+}
+
+function Install-RiddlerKey([string]$game) {
+    $ini = Get-InputIni $game
+    $cfg = Split-Path $ini
+    if (-not (Test-Path $cfg)) { throw "Folder not found:`n$cfg`n`nIt comes with the free 'New 52' skins DLC (app 356474). Install that DLC in Steam, then try again." }
+    foreach ($d in @('Binaries\Win64', 'Binaries')) { [IO.File]::WriteAllText((Join-Path $game "$d\$RiddlerFile"), $RiddlerCommands) }
+    $lines = New-Object System.Collections.Generic.List[string]
+    if (Test-Path $ini) {
+        New-Item -ItemType Directory -Force $BackupRoot | Out-Null
+        Copy-Item $ini (Join-Path $BackupRoot ('BmInput_{0}.ini' -f (Get-Date -Format 'yyyy-MM-dd_HHmmss')))
+        foreach ($l in [IO.File]::ReadAllLines($ini)) { if ($l -notmatch '^\s*\.Bindings=\(Name="Divide"\s*,') { $lines.Add($l) } }
+    }
+    $h = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i].Trim() -ieq '[Engine.PlayerInput]') { $h = $i; break } }
+    if ($h -lt 0) { if ($lines.Count -gt 0) { $lines.Add('') }; $lines.Add('[Engine.PlayerInput]'); $h = $lines.Count - 1 }
+    $lines.Insert($h + 1, $RiddlerBinding)
+    [IO.File]::WriteAllText($ini, (($lines -join "`r`n") + "`r`n"))
+}
+
+function Remove-RiddlerKey([string]$game) {
+    $ini = Get-InputIni $game
+    if (Test-Path $ini) {
+        $keep = @([IO.File]::ReadAllLines($ini) | Where-Object { $_ -notmatch "^\s*\.Bindings=\(Name=""Divide""\s*,\s*Command=""exec\s+$([regex]::Escape($RiddlerFile))""" })
+        # A file holding nothing but the section header was created by Install-RiddlerKey
+        if (@($keep | Where-Object { $_.Trim() -and $_.Trim() -ine '[Engine.PlayerInput]' }).Count -eq 0) { Remove-Item $ini }
+        else { [IO.File]::WriteAllText($ini, (($keep -join "`r`n") + "`r`n")) }
+    }
+    foreach ($d in @('Binaries\Win64', 'Binaries')) { Remove-Item (Join-Path $game "$d\$RiddlerFile") -ErrorAction SilentlyContinue }
+}
+
+if ($RiddlerKey) {
+    $game = Find-GameDir
+    if (-not $game) { throw 'Arkham Knight install folder not found in any Steam library.' }
+    if ($RiddlerKey -eq 'install') { Install-RiddlerKey $game }
+    elseif ($RiddlerKey -eq 'remove') { Remove-RiddlerKey $game }
+    $st = Get-RiddlerKeyState $game
+    "Game: $game"
+    "Numpad / : $($st.State)$(if ($st.Command) { " ($($st.Command))" })"
+    return
+}
+
 function Format-Best($c, [int]$v) {
     if ($v -le 0) { return '' }
     if ($c.LowerIsBetter) { return ('{0}:{1:00}.{2:00}' -f [Math]::Floor($v / 6000), [Math]::Floor(($v % 6000) / 100), ($v % 100)) }
@@ -466,7 +556,11 @@ $btnPts = New-Object System.Windows.Forms.Button
 $btnPts.Text = 'Set points'; $btnPts.Location = New-Object System.Drawing.Point(212, 42); $btnPts.Width = 100
 $lblPtsNote = New-Object System.Windows.Forms.Label
 $lblPtsNote.AutoSize = $true; $lblPtsNote.Location = New-Object System.Drawing.Point(320, 46); $lblPtsNote.ForeColor = [System.Drawing.Color]::DimGray
-$top.Controls.AddRange(@($lbl, $combo, $btnReload, $lblPts, $numPts, $btnPts, $lblPtsNote))
+$btnRiddler = New-Object System.Windows.Forms.Button
+$btnRiddler.Location = New-Object System.Drawing.Point(660, 42); $btnRiddler.Width = 160
+$tips = New-Object System.Windows.Forms.ToolTip
+$tips.SetToolTip($btnRiddler, "Adds a Numpad / key to the game (not a save edit).`nPress it in game after every launch: most cars then carry a Riddler informant,`nand informants stay conscious so you can interrogate the same one again and again.")
+$top.Controls.AddRange(@($lbl, $combo, $btnReload, $lblPts, $numPts, $btnPts, $lblPtsNote, $btnRiddler))
 
 $grid = New-Object System.Windows.Forms.DataGridView
 $grid.Dock = 'Fill'
@@ -624,5 +718,28 @@ $btnRestore.Add_Click({
     $status.Text = "Restored from $src. (Previous state saved to $bk)"
 })
 
-$form.Add_Shown({ Refresh-Saves })
+function Update-RiddlerButton {
+    $script:gameDir = Find-GameDir
+    if (-not $script:gameDir) { $btnRiddler.Text = 'Riddler key: no game'; $btnRiddler.Enabled = $false; return }
+    if ((Get-RiddlerKeyState $script:gameDir).State -eq 'Installed') { $btnRiddler.Text = 'Remove Riddler key' } else { $btnRiddler.Text = 'Add Riddler key (Num /)' }
+}
+
+$btnRiddler.Add_Click({
+    try {
+        $st = Get-RiddlerKeyState $script:gameDir
+        if ($st.State -eq 'Installed') {
+            Remove-RiddlerKey $script:gameDir
+            $status.Text = "Riddler informant key removed. Restart the game for it to take effect."
+        }
+        else {
+            if ($st.State -eq 'Other' -and [System.Windows.Forms.MessageBox]::Show("Numpad / is already bound in the game to:`n`n$($st.Command)`n`nReplace it with the Riddler informant key?", 'Numpad / in use', 'YesNo', 'Question') -ne 'Yes') { return }
+            Install-RiddlerKey $script:gameDir
+            $status.Text = "Riddler key added. Restart the game, then press Numpad / once you're playing (again after every launch). Most new cars then carry a`nRiddler informant (green in Detective Mode) who stays conscious, so keep interrogating until no new trophies appear on the map."
+        }
+        Update-RiddlerButton
+    }
+    catch { [void][System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Riddler key', 'OK', 'Error') }
+})
+
+$form.Add_Shown({ Update-RiddlerButton; Refresh-Saves })
 [void]$form.ShowDialog()
